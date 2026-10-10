@@ -25,9 +25,16 @@ fn tool_defs() -> Value {
         {"name": "seat_list", "description": "List seats and whether they are alive.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "seat_launch",
-         "description": "Launch a program inside the seat (Wayland, private D-Bus). Use an argv array.",
+         "description": "Launch a program inside the seat (Wayland, private D-Bus). Use an argv array. Optionally runs as an isolated sub-account.",
          "inputSchema": {"type": "object", "properties": {"name": name,
+            "user": {"type": "string", "description": "Optional isolated sub-account username to run this application as (e.g. james)"},
             "command": {"type": "array", "items": {"type": "string"}}}, "required": ["name", "command"]}},
+        {"name": "subaccount_list", "description": "List registered AI sub-accounts and their permissions.",
+         "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "subaccount_share", "description": "Grant a sub-account access to a folder via POSIX ACL.",
+         "inputSchema": {"type": "object", "properties": {"user": {"type": "string"}, "folder": {"type": "string"}, "readonly": {"type": "boolean"}}, "required": ["user", "folder"]}},
+        {"name": "subaccount_revoke", "description": "Revoke a sub-account's access to a shared folder.",
+         "inputSchema": {"type": "object", "properties": {"user": {"type": "string"}, "folder": {"type": "string"}}, "required": ["user", "folder"]}},
         {"name": "seat_screenshot", "description": "Capture the seat's screen (PNG, includes the agent cursor).",
          "inputSchema": {"type": "object", "properties": {"name": name}, "required": ["name"]}},
         {"name": "seat_move", "description": "Move the seat's cursor to absolute coordinates.",
@@ -101,8 +108,35 @@ fn call_tool(tool: &str, a: &Value) -> Result<Value> {
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
-            let p = session::launch(s(a, "name")?, &argv, &[])?;
-            Ok(text(format!("launched pid {}", p.pid)))
+            let user = a.get("user").and_then(Value::as_str);
+            let p = session::launch_as(s(a, "name")?, user, &argv, &[])?;
+            Ok(text(format!("launched pid {} (user: {})", p.pid, user.unwrap_or("raymondj"))))
+        }
+        "subaccount_list" => {
+            let accounts = seat_core::subaccount::list()?;
+            let out: Vec<Value> = accounts.iter().map(|acc| {
+                json!({
+                    "username": acc.username,
+                    "uid": acc.uid,
+                    "gid": acc.gid,
+                    "home": acc.home.display().to_string(),
+                    "shared_paths": acc.shared_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+                })
+            }).collect();
+            Ok(text(serde_json::to_string_pretty(&out)?))
+        }
+        "subaccount_share" => {
+            let user = s(a, "user")?;
+            let folder = s(a, "folder")?;
+            let ro = a.get("readonly").and_then(Value::as_bool).unwrap_or(false);
+            seat_core::subaccount::grant_folder(user, std::path::Path::new(folder), ro)?;
+            Ok(text(format!("granted {user} access to {folder} (readonly: {ro})")))
+        }
+        "subaccount_revoke" => {
+            let user = s(a, "user")?;
+            let folder = s(a, "folder")?;
+            seat_core::subaccount::revoke_folder(user, std::path::Path::new(folder))?;
+            Ok(text(format!("revoked {user} access to {folder}")))
         }
         "seat_screenshot" => {
             let png = ops::screenshot_png(s(a, "name")?)?;

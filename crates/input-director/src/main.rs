@@ -18,9 +18,15 @@ enum Cmd {
     /// Manage isolated seat sessions (private headless KWin).
     #[command(subcommand)]
     Session(SessionCmd),
-    /// Launch a program inside a seat.
+    /// Manage isolated AI sub-accounts (dedicated Linux user accounts).
+    #[command(subcommand)]
+    Subaccount(SubaccountCmd),
+    /// Launch a program inside a seat (optionally running as an isolated sub-account).
     Launch {
         name: String,
+        /// Run as a specific isolated sub-account (e.g. james)
+        #[arg(short, long)]
+        user: Option<String>,
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
@@ -85,6 +91,34 @@ enum SessionCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum SubaccountCmd {
+    /// Create a new dedicated Linux sub-account for the AI.
+    Create {
+        username: String,
+        /// Directories in parent account to share via ACL
+        #[arg(long)]
+        share: Vec<std::path::PathBuf>,
+    },
+    /// List registered sub-accounts and their permissions.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Grant read/write (or read-only) access to a parent directory.
+    Share {
+        username: String,
+        folder: std::path::PathBuf,
+        #[arg(long)]
+        readonly: bool,
+    },
+    /// Revoke access to a parent directory.
+    Revoke {
+        username: String,
+        folder: std::path::PathBuf,
+    },
+}
+
 fn parse_size(s: &str) -> Result<(u32, u32)> {
     let Some((w, h)) = s.split_once('x') else {
         bail!("size must look like 1280x800");
@@ -137,9 +171,39 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Launch { name, command } => {
-            let p = session::launch(&name, &command, &[])?;
-            println!("launched pid {} in seat '{name}'", p.pid);
+        Cmd::Subaccount(SubaccountCmd::Create { username, share }) => {
+            let info = seat_core::subaccount::create(&username, &share)?;
+            println!("created sub-account '{}' (uid={}): home={}", info.username, info.uid, info.home.display());
+            for p in &info.shared_paths {
+                println!("  shared: {}", p.display());
+            }
+        }
+        Cmd::Subaccount(SubaccountCmd::List { json }) => {
+            let list = seat_core::subaccount::list()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else if list.is_empty() {
+                println!("no sub-accounts");
+            } else {
+                for a in list {
+                    println!("{:<16} uid={:<6} home={:<20} shared={}", a.username, a.uid, a.home.display(), a.shared_paths.len());
+                    for p in a.shared_paths {
+                        println!("    -> {}", p.display());
+                    }
+                }
+            }
+        }
+        Cmd::Subaccount(SubaccountCmd::Share { username, folder, readonly }) => {
+            seat_core::subaccount::grant_folder(&username, &folder, readonly)?;
+            println!("granted {} access to '{}' for user '{}'", if readonly { "read-only" } else { "read/write" }, folder.display(), username);
+        }
+        Cmd::Subaccount(SubaccountCmd::Revoke { username, folder }) => {
+            seat_core::subaccount::revoke_folder(&username, &folder)?;
+            println!("revoked access to '{}' for user '{}'", folder.display(), username);
+        }
+        Cmd::Launch { name, user, command } => {
+            let p = session::launch_as(&name, user.as_deref(), &command, &[])?;
+            println!("launched pid {} in seat '{name}'{}", p.pid, user.map_or("".into(), |u| format!(" (as user {u})")));
         }
         Cmd::Screenshot { name, output } => {
             let png = ops::screenshot_png(&name)?;

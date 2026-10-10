@@ -357,17 +357,30 @@ pub fn list() -> Result<Vec<SessionInfo>> {
     Ok(out)
 }
 
-/// Launch a program inside the session. Returns the recorded process.
-pub fn launch(name: &str, argv: &[String], extra_env: &[(String, String)]) -> Result<Proc> {
+/// Launch a program inside the session, optionally as a specific subaccount.
+pub fn launch_as(name: &str, user: Option<&str>, argv: &[String], extra_env: &[(String, String)]) -> Result<Proc> {
     let mut info = load(name)?;
     if !info.kwin.alive() {
         bail!("session '{name}' is not running");
     }
+    let socket_path = runtime_dir()?.join(&info.socket);
+    if let Some(username) = user {
+        // Ensure subaccount has ACL access to the wayland socket
+        crate::subaccount::grant_seat_access(username, &socket_path)?;
+    }
     let (prog, args) = argv.split_first().ok_or_else(|| anyhow!("empty command"))?;
     let log = info.dir.join(format!("app-{}.log", info.apps.len()));
-    let mut cmd = Command::new(prog);
-    cmd.args(args)
-        .env_remove("DISPLAY")
+    let mut cmd = if let Some(username) = user {
+        let mut c = Command::new("sudo");
+        c.args(["-u", username, prog]);
+        c.args(args);
+        c
+    } else {
+        let mut c = Command::new(prog);
+        c.args(args);
+        c
+    };
+    cmd.env_remove("DISPLAY")
         .env("WAYLAND_DISPLAY", &info.socket)
         .env("QT_QPA_PLATFORM", "wayland")
         .env("GDK_BACKEND", "wayland")
@@ -385,11 +398,19 @@ pub fn launch(name: &str, argv: &[String], extra_env: &[(String, String)]) -> Re
     }
     detach(&mut cmd);
     let child = cmd.spawn().with_context(|| format!("launching {prog}"))?;
-    let proc = Proc::new(child.id(), argv.join(" "));
+    let proc = Proc::new(
+        child.id(),
+        format!("{}{}", user.map_or("".into(), |u| format!("[{u}] ")), argv.join(" ")),
+    );
     std::mem::forget(child);
     info.apps.push(proc.clone());
     save(&info)?;
     Ok(proc)
+}
+
+/// Launch a program inside the session. Returns the recorded process.
+pub fn launch(name: &str, argv: &[String], extra_env: &[(String, String)]) -> Result<Proc> {
+    launch_as(name, None, argv, extra_env)
 }
 
 fn terminate(procs: &[&Proc]) {
