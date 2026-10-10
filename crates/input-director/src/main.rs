@@ -72,6 +72,9 @@ enum SessionCmd {
         /// Also start rootless Xwayland so X11 apps can run in the seat.
         #[arg(long)]
         xwayland: bool,
+        /// Dedicate a physical monitor (e.g. DP-2) to the AI workspace
+        #[arg(long)]
+        display: Option<String>,
     },
     /// Stop a seat and all its processes.
     Stop { name: String },
@@ -91,13 +94,18 @@ fn parse_size(s: &str) -> Result<(u32, u32)> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Session(SessionCmd::Start { name, size, scale, xwayland }) => {
-            let (w, h) = parse_size(&size)?;
+        Cmd::Session(SessionCmd::Start { name, size, scale, xwayland, display }) => {
+            let (w, h) = if display.is_some() && size == "1280x800" {
+                (2560, 1440)
+            } else {
+                parse_size(&size)?
+            };
             let mut spec = session::SessionSpec::new(&name);
             spec.width = w;
             spec.height = h;
             spec.scale = scale;
             spec.xwayland = xwayland;
+            spec.display = display;
             let info = session::start(&spec)?;
             println!(
                 "seat '{}' up: {}x{}  wayland={}  kwin_pid={}  dbus_pid={}\nstate: {}",

@@ -14,10 +14,12 @@ fn tool_defs() -> Value {
     let xy = |d: &str| json!({"type": "number", "description": d});
     json!([
         {"name": "seat_start",
-         "description": "Create an isolated agent seat: a private headless KWin session with its own cursor, keyboard and focus. Never touches the human's session.",
+         "description": "Create an isolated agent seat: a private KWin session with its own cursor, keyboard and focus. Can run headless or dedicated to a physical monitor (e.g. DP-2). Never touches the human's session.",
          "inputSchema": {"type": "object", "properties": {
             "name": name, "width": {"type": "integer"}, "height": {"type": "integer"},
-            "scale": {"type": "number"}, "xwayland": {"type": "boolean"}}, "required": ["name"]}},
+            "scale": {"type": "number"}, "xwayland": {"type": "boolean"},
+            "display": {"type": "string", "description": "Optional physical monitor name (e.g. DP-2) to dedicate this display to the AI workspace"}},
+            "required": ["name"]}},
         {"name": "seat_stop", "description": "Stop a seat and every process inside it.",
          "inputSchema": {"type": "object", "properties": {"name": name}, "required": ["name"]}},
         {"name": "seat_list", "description": "List seats and whether they are alive.",
@@ -62,14 +64,21 @@ fn call_tool(tool: &str, a: &Value) -> Result<Value> {
     match tool {
         "seat_start" => {
             let mut spec = session::SessionSpec::new(s(a, "name")?);
-            spec.width = i(a, "width", 1280) as u32;
-            spec.height = i(a, "height", 800) as u32;
+            let display = a.get("display").and_then(Value::as_str).map(String::from);
+            if display.is_some() {
+                spec.width = i(a, "width", 2560) as u32;
+                spec.height = i(a, "height", 1440) as u32;
+            } else {
+                spec.width = i(a, "width", 1280) as u32;
+                spec.height = i(a, "height", 800) as u32;
+            }
+            spec.display = display;
             spec.scale = a.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             spec.xwayland = a.get("xwayland").and_then(Value::as_bool).unwrap_or(false);
             let info = session::start(&spec)?;
             Ok(text(format!(
-                "seat '{}' started: {}x{}, wayland socket {}, kwin pid {}",
-                info.name, info.width, info.height, info.socket, info.kwin.pid
+                "seat '{}' started: {}x{}, display={:?}, wayland socket {}, kwin pid {}",
+                info.name, info.width, info.height, info.display, info.socket, info.kwin.pid
             )))
         }
         "seat_stop" => {

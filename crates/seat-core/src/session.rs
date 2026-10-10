@@ -35,6 +35,7 @@ pub struct SessionInfo {
     pub height: u32,
     pub scale: f64,
     pub xwayland: bool,
+    pub display: Option<String>,
     pub started_at_unix: u64,
     pub dbus: Proc,
     pub kwin: Proc,
@@ -49,6 +50,7 @@ pub struct SessionSpec {
     pub height: u32,
     pub scale: f64,
     pub xwayland: bool,
+    pub display: Option<String>,
 }
 
 impl SessionSpec {
@@ -59,6 +61,7 @@ impl SessionSpec {
             height: 800,
             scale: 1.0,
             xwayland: false,
+            display: None,
         }
     }
 }
@@ -233,19 +236,37 @@ pub fn start(spec: &SessionSpec) -> Result<SessionInfo> {
 
     // 2. nested compositor
     let mut kwin_cmd = Command::new("kwin_wayland");
-    kwin_cmd
-        .args(["--virtual", "--socket", &socket])
-        .args(["--width", &spec.width.to_string()])
-        .args(["--height", &spec.height.to_string()])
-        .args(["--scale", &spec.scale.to_string()])
-        .args(["--no-lockscreen", "--no-global-shortcuts"]);
-    if spec.xwayland {
-        kwin_cmd.arg("--xwayland");
+    if let Some(ref _disp) = spec.display {
+        let host_wayland = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
+        kwin_cmd
+            .args(["--wayland-display", &host_wayland, "--socket", &socket])
+            .args(["--width", &spec.width.to_string()])
+            .args(["--height", &spec.height.to_string()])
+            .args(["--scale", &spec.scale.to_string()])
+            .args(["--no-lockscreen", "--no-global-shortcuts"]);
+        if spec.xwayland {
+            kwin_cmd.arg("--xwayland");
+        }
+        kwin_cmd
+            .env("WAYLAND_DISPLAY", host_wayland)
+            .env("DISPLAY", std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into()))
+            .env("KWIN_SCREENSHOT_NO_PERMISSION_CHECKS", "1");
+    } else {
+        kwin_cmd
+            .args(["--virtual", "--socket", &socket])
+            .args(["--width", &spec.width.to_string()])
+            .args(["--height", &spec.height.to_string()])
+            .args(["--scale", &spec.scale.to_string()])
+            .args(["--no-lockscreen", "--no-global-shortcuts"]);
+        if spec.xwayland {
+            kwin_cmd.arg("--xwayland");
+        }
+        kwin_cmd
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env("KWIN_SCREENSHOT_NO_PERMISSION_CHECKS", "1");
     }
     kwin_cmd
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("DISPLAY")
-        .env("KWIN_SCREENSHOT_NO_PERMISSION_CHECKS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(File::create(dir.join("kwin.log"))?))
         .stderr(Stdio::from(File::create(dir.join("kwin.err.log"))?));
@@ -261,7 +282,14 @@ pub fn start(spec: &SessionSpec) -> Result<SessionInfo> {
             return Err(anyhow!(e).context("spawning kwin_wayland"));
         }
     };
-    let kwin = Proc::new(kwin_child.id(), "kwin_wayland --virtual");
+    let kwin = Proc::new(
+        kwin_child.id(),
+        if let Some(ref d) = spec.display {
+            format!("kwin_wayland --wayland-display ({d})")
+        } else {
+            "kwin_wayland --virtual".into()
+        },
+    );
     std::mem::forget(kwin_child);
 
     let socket_path = runtime_dir()?.join(&socket);
@@ -284,6 +312,7 @@ pub fn start(spec: &SessionSpec) -> Result<SessionInfo> {
         height: spec.height,
         scale: spec.scale,
         xwayland: spec.xwayland,
+        display: spec.display.clone(),
         started_at_unix: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
