@@ -1,0 +1,6 @@
+target/
+build/
+.ref-kwin/
+kwin/
+*.swp
+.env
